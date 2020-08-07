@@ -1,0 +1,38 @@
+ module top;
+  bit clk;
+  bit reset;
+  initial
+    begin
+      clk=1;
+      reset=1;
+   #5 reset=0; 
+    end
+  initial
+    forever
+      begin     
+        #5 clk=~clk;
+      end
+  inf  intf(clk,reset);
+    //Dut instantiation
+  fifo f1
+  (.clk(intf.clk),
+   .reset(intf.reset),
+   .push(intf.push),
+   .pop(intf.pop),
+   .data_in(intf.data_in),
+   .data_out(intf.data_out),
+   .fifo_full(intf.fifo_full),
+   .fifo_empty(intf.fifo_empty),
+   .err1(intf.err1),
+   .err2(intf.err2),
+   .err3(intf.err3)
+  );
+ initial begin
+   uvm_config_db#(virtual inf)::set(null, "uvm_test_top", "vir_intf", intf);
+   run_test("tester");
+  end
+  initial begin
+    $dumpvars;
+    $dumpfile ("dump.vcd");
+  end
+endmodule:top
