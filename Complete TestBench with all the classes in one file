@@ -1,0 +1,414 @@
+`include "uvm_macros.svh"
+import uvm_pkg::*;
+class item extends uvm_sequence_item;
+   logic fifo_full,fifo_empty,err1,err2,err3;
+   logic [3:0] data_out;
+  rand bit push;
+  rand bit pop;
+  rand  bit [3:0] data_in;
+   // used for registration
+  `uvm_object_utils_begin(item)    
+  `uvm_field_int(push,UVM_ALL_ON)
+  `uvm_field_int(pop,UVM_ALL_ON)
+  `uvm_field_int(data_in,UVM_ALL_ON)
+  `uvm_field_int(data_out,UVM_ALL_ON)
+  `uvm_field_int(fifo_full,UVM_ALL_ON)
+  `uvm_field_int(fifo_empty,UVM_ALL_ON)
+  `uvm_field_int(err1,UVM_ALL_ON)
+  `uvm_field_int(err2,UVM_ALL_ON)
+  `uvm_field_int(err3,UVM_ALL_ON)
+  `uvm_object_utils_end
+  function new(string name="item");
+    super.new(name);
+  endfunction
+  virtual function string convert2str();
+    return $sformatf("push=%d,pop=%d,data_in=%d,data_out=%d,fifo_full=%d,fifo_empty=%d,err1=%d,err2=%d,err3=%d",push,pop,data_in,data_out,fifo_full,fifo_empty,err1,err2,err3);
+  endfunction
+endclass:item
+/////////////////////////////////////////////////////////////////////////////////////
+class gen_seq extends uvm_sequence;
+  `uvm_object_utils(gen_seq)
+  function new(string name="gen_seq");
+    super.new(name);
+  endfunction
+  int repeat_count;
+  virtual task body();
+    for (int i = 0; i < repeat_count;i ++)
+      begin
+    	item m_item = item::type_id::create("m_item");
+    	start_item(m_item);
+    	m_item.randomize();
+       
+        `uvm_info("SEQ", $sformatf("Generate new item: %s", m_item.convert2str()), UVM_LOW)
+      	finish_item(m_item);
+    end
+    `uvm_info("SEQ", $sformatf("Done generation of %d items", repeat_count), UVM_LOW)
+  endtask
+endclass:gen_seq
+//////////////////////////////////////////////////////////////////////////////////////
+`define DRIV_MAC vif.DRIVER.drv
+class driver extends uvm_driver #(item);
+  `uvm_component_utils(driver)
+  function new(string name = "driver", uvm_component parent=null);
+    super.new(name, parent);
+  endfunction
+virtual inf vif;
+virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+  if (!uvm_config_db#(virtual inf)::get(this, "", "vir_intf", vif))
+      `uvm_fatal("DRV", "Could not get vif")
+  endfunction
+virtual task run_phase(uvm_phase phase);
+    super.run_phase(phase);
+    forever 
+     begin
+      item m_item;
+       `uvm_info("DRV", $sformatf("Wait for item from sequencer"), UVM_LOW)
+      seq_item_port.get_next_item(m_item);
+      drive_item(m_item);
+       `uvm_info("DRV", $sformatf("Transfered to Dut"), UVM_LOW)
+      seq_item_port.item_done();
+    end
+endtask
+virtual task reset;
+      wait (vif.reset);
+    $display("%d:reset starts of driver",$time);
+      `DRIV_MAC.push<=0;
+      `DRIV_MAC.pop<=0;
+      `DRIV_MAC.data_in<=0;
+  wait (vif.reset==0);
+    $display("%d:reset done of driver",$time);
+endtask:reset
+  virtual task drive_item(item m_item);
+  @(posedge vif.clk);
+  $display("%d:driver enters in posedge",$time,vif.clk);
+        begin
+             `DRIV_MAC.data_in<=m_item.data_in;
+             `DRIV_MAC.push<=m_item.push;  
+             `DRIV_MAC.pop<=m_item.pop;
+          `uvm_info("DRV", $sformatf("D=%d,p=%d,pop=%d",m_item.data_in,m_item.push,m_item.pop), UVM_LOW)
+          
+        end
+endtask:drive_item
+endclass:driver
+  //////////////////////////////////////////////////////////////////////////////////////////////////
+  `define MON_MAC vif.MONITOR.mon
+class monitor extends uvm_monitor;
+  `uvm_component_utils(monitor)
+  function new(string name="monitor", uvm_component parent=null);
+    super.new(name, parent);
+  endfunction
+  uvm_analysis_port  #(item) mon_analysis_port;
+virtual inf vif;
+virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+  if (!uvm_config_db#(virtual inf)::get(this, "", "vir_intf", vif))
+      `uvm_fatal("MON", "Could not get vif")
+    mon_analysis_port = new ("mon_analysis_port", this);
+endfunction
+virtual task run_phase(uvm_phase phase);
+    super.run_phase(phase);
+    forever 
+      begin
+        item m_item = item::type_id::create("m_item");
+        @(posedge vif.clk);  
+				#1;
+                 m_item.push=`MON_MAC.push;
+                 m_item.pop=`MON_MAC.pop;
+                 m_item.fifo_full=`MON_MAC.fifo_full;
+                 m_item.fifo_empty=`MON_MAC.fifo_empty;
+                 m_item.data_out=`MON_MAC.data_out;
+                 m_item.data_in=`MON_MAC.data_in;
+                 m_item.err1=`MON_MAC.err1;
+                 m_item.err2=`MON_MAC.err2;
+                 m_item.err3=`MON_MAC.err3;
+        `uvm_info("MON", $sformatf("Received item %s", m_item.convert2str()), UVM_LOW)
+        mon_analysis_port.write(m_item);
+	   end
+  endtask
+endclass:monitor
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////
+  class scoreboard extends uvm_scoreboard;
+  bit pred_push;
+  bit pred_pop;
+  logic [3:0] pred_data_in;  
+  logic [3:0] pred_data_out;
+  bit pred_fifo_full;
+  bit pred_fifo_empty;
+  bit pred_err1;
+  bit pred_err2;
+  bit pred_err3;
+  int q[$];
+  virtual inf vif;
+  uvm_analysis_imp #(item, scoreboard) m_analysis_imp;
+covergroup covport;
+  coverpoint pred_pop; 
+  coverpoint pred_push ;
+  coverpoint pred_data_in;    
+  coverpoint pred_fifo_full;
+  coverpoint pred_fifo_empty;
+  coverpoint pred_err1;
+  coverpoint pred_err2;
+  coverpoint pred_err3;
+endgroup
+  `uvm_component_utils(scoreboard)
+  function new(string name="scoreboard", uvm_component parent=null);
+    super.new(name, parent);
+     covport=new;
+  endfunction
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db#(virtual inf)::get(this, "", "vir_intf", vif))
+      `uvm_fatal("SCB", "Could not get vif")
+    m_analysis_imp = new("m_analysis_imp", this);
+  endfunction
+virtual task reset;
+    wait(vif.reset);
+    $display("%d:scoreboard reset starts",$time);
+    pred_data_in=0;
+    pred_data_out=0;
+    pred_fifo_full=0;
+    pred_fifo_empty=0;
+      wait(!vif.reset);
+    $display("%d:scoreboard reset ends",$time);
+endtask:reset
+  virtual function write(item m_item);
+    `uvm_info("SCBD", $sformatf("Entered in SCBD"), UVM_LOW)
+    pred_pop=m_item.pop;
+    pred_push=m_item.push;
+    pred_data_in=m_item.data_in;
+   if(m_item.push&&m_item.pop==1)
+           begin
+            pred_err1=1;
+             if(m_item.push&&pred_fifo_full)
+              pred_err2=1;
+            else
+              pred_err2=0;
+             if(m_item.pop&&pred_fifo_empty)
+                pred_err3=1;
+            else
+                pred_err3=0;
+             compare(m_item);
+           end
+     else
+           begin
+              pred_err1=0;
+             if(m_item.push&&pred_fifo_full)
+                begin
+                  pred_err2=1; 
+                end
+             else
+               begin
+                 pred_err2=0; 
+                 if(m_item.push==1)
+                   begin
+                     q.push_front(m_item.data_in);
+                   end 
+               end
+             if(m_item.pop&&pred_fifo_empty)
+                begin
+                  pred_err3=1;
+                end
+              else
+                begin
+                  pred_err3=0;
+                  if(m_item.pop==1)
+                    begin
+                       pred_data_out=q.pop_back();
+                    end
+                end
+          if (q.size==4)
+            pred_fifo_full=1;
+          else
+            pred_fifo_full=0;
+          if (q.size==0)
+            pred_fifo_empty=1;
+          else
+            pred_fifo_empty=0;
+             compare(m_item);
+       end
+endfunction:write
+virtual function compare(item m_item);
+  `uvm_info("SCBD", $sformatf("Entered in SCBD-Compare"), UVM_LOW)
+   begin
+     if (pred_data_out==m_item.data_out)
+       `uvm_info("SCBD",$sformatf("pred_data_out=%d ,actual data_out=%d",pred_data_out, m_item.data_out), UVM_LOW)
+     else
+       `uvm_error("SCBD",$sformatf("pred_data_out=%d ,actual data_out=%d",pred_data_out, m_item.data_out))
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+       if (pred_fifo_full!=m_item.fifo_full)
+            `uvm_error("SCBD",$sformatf("predicted fifo full signal=%d ,actual fifo full signal=%d",pred_fifo_full, m_item.fifo_full))
+     else
+            `uvm_info("SCBD",$sformatf("predicted fifo full signal=%d ,actual fifo full signal=%d",pred_fifo_full, m_item.fifo_full), UVM_LOW)
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+       if (pred_fifo_empty!=m_item.fifo_empty)
+       `uvm_error("SCBD",$sformatf("predicted fifo empty signal=%d ,actual fifo empty signal=%d",pred_fifo_empty, m_item.fifo_empty))
+     else
+       `uvm_info("SCBD",$sformatf("predicted fifo empty signal=%d ,actual fifo empty signal=%d",pred_fifo_empty, m_item.fifo_empty), UVM_LOW)  //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+       if(pred_err1==m_item.err1)
+       `uvm_info("SCBD",$sformatf("Corner case satisfied when push and pop are simultaneously on predicted error signal =%d,actual error signal =%d",pred_err1,m_item.err1),UVM_LOW)
+     else
+              `uvm_error("SCBD",$sformatf("Error in corner case  when push and pop simultaneously on err1 is not high:- predicted error signal =%d,actual error signal =%d",pred_err1,m_item.err1))
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+       if(pred_err2==m_item.err2)
+       `uvm_info("SCBD",$sformatf("corner case satisfied :- push is given when fifo is full:-predicted error signal =%d,actual error signal =%d",pred_err2,m_item.err2),UVM_LOW)
+            else
+              `uvm_error("SCBD",$sformatf("Error in corner case :- push is given when fifo is full but Err2 is not high:-predicted error signal =%d,actual error signal =%d",pred_err2,m_item.err2))
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+              if(pred_err3==m_item.err3)
+            `uvm_info("SCBD",$sformatf("corner case satisfy to check :-pop is given when fifo is empty:-predicted error signal =%d,actual error signal =%d",pred_err3,m_item.err3),UVM_LOW)
+            else
+              `uvm_error("SCBD",$sformatf("Error in corner case :- pop is given when fifo is empty but Err3 is not high predicted error signal =%d,actual error signal =%d",pred_err3,m_item.err3))
+    covport.sample();
+    coverage; //$display("%d:push=%d,pop=%d,data_in=%d,fifofull=%d,fifoempty=%d,err1=%d,err2=%d,err3=%d",$time,tr.push,tr.pop,tr.data_in,pred_fifo_full,pred_fifo_empty,pred_err1,pred_err2,pred_err3);
+   end       
+ endfunction:compare
+  virtual function coverage;
+    `uvm_info("SCBD", $sformatf("Entered in SCBD-Coverage"), UVM_LOW)
+    begin
+      $display("Coverage Report =%0.2f",covport.get_inst_coverage());
+    end
+  endfunction:coverage
+endclass:scoreboard
+  /////////////////////////////////////////////////////////////////////////////////////////////
+  class agent extends uvm_agent;
+  `uvm_component_utils(agent)
+  function new(string name="agent", uvm_component parent=null);
+    super.new(name, parent);
+  endfunction
+
+  driver 		d0; 		// Driver handle
+  monitor 		m0; 		// Monitor handle
+  uvm_sequencer #(item)	s0; 		// Sequencer Handle
+
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    s0 = uvm_sequencer#(item)::type_id::create("s0", this);
+    d0 = driver::type_id::create("d0", this);
+    m0 = monitor::type_id::create("m0", this);
+  endfunction
+
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    d0.seq_item_port.connect(s0.seq_item_export);
+  endfunction
+
+endclass:agent
+  ///////////////////////////////////////////////////////////////////////////////////////
+  class environment extends uvm_env;
+  `uvm_component_utils(environment)
+  function new(string name="environment", uvm_component parent=null);
+    super.new(name, parent);
+  endfunction
+
+  agent 		agt; 		// Agent handle
+  scoreboard	scb; 		// Scoreboard handle
+  //gen_seq       gen;
+virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    agt = agent::type_id::create("agt", this);
+    scb = scoreboard::type_id::create("scb", this);
+    //gen = gen_seq::type_id::create("gen", this);
+  endfunction
+virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+  agt.m0.mon_analysis_port.connect(scb.m_analysis_imp);
+  endfunction
+endclass:environment
+  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  class tester extends uvm_test;
+  `uvm_component_utils(tester)
+  function new(string name = "tester", uvm_component parent=null);
+    super.new(name, parent);
+  endfunction
+  environment env;
+  gen_seq 	seq;
+  virtual inf vif;
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+
+    // Create the environment
+    env = environment::type_id::create("env", this);
+    //env.gen.repeat_count=8;
+    // Get virtual IF handle from top level and pass it to everything
+    // in env level
+    if (!uvm_config_db#(virtual inf)::get(this, "", "vir_intf", vif))
+      `uvm_fatal("TEST", "Did not get vif")
+      uvm_config_db#(virtual inf)::set(this, "env.*", "vir_intf", vif);
+   // Create sequence and randomize it
+   seq = gen_seq::type_id::create("seq");
+    seq.repeat_count=8;
+  endfunction
+    virtual task run_phase(uvm_phase phase);
+    phase.raise_objection(this);
+    apply_reset();
+      seq.start(env.agt.s0);
+    #120;
+    phase.drop_objection(this);
+  endtask
+  virtual task apply_reset();
+    fork
+    env.agt.d0.reset;
+    env.scb.reset;
+    `uvm_info("test", $sformatf("Done reset"), UVM_LOW)
+    join
+  endtask
+endclass:tester
+  /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  interface inf(input logic clk,input logic reset);
+  logic [3:0] data_in, data_out;
+  logic push,pop,fifo_full,fifo_empty,err1,err2,err3;
+  //clocking block for driver
+  clocking drv @(posedge clk);
+   // default output #1;
+    output push,data_in,pop;
+    //input fifo_empty,fifo_full,data_out,err1,err2,err3;
+  endclocking: drv
+    //clocking block for monitor
+  clocking mon @(posedge clk);
+    default input #0;
+    input  push,pop,data_in,data_out,fifo_empty,fifo_full,err1,err2,
+    err3;
+  endclocking: mon
+  modport DRIVER (clocking drv,input clk,reset);
+  modport MONITOR(clocking mon,input clk,reset);
+endinterface:inf
+    /////////////////////////////////////////////////////////////////////////////////
+    module top;
+  bit clk;
+  bit reset;
+  initial
+    begin
+      clk=1;
+      reset=1;
+   #5 reset=0; 
+    end
+  initial
+    forever
+      begin     
+        #5 clk=~clk;
+      end
+  inf  intf(clk,reset);
+    //Dut instantiation
+  fifo f1
+  (.clk(intf.clk),
+   .reset(intf.reset),
+   .push(intf.push),
+   .pop(intf.pop),
+   .data_in(intf.data_in),
+   .data_out(intf.data_out),
+   .fifo_full(intf.fifo_full),
+   .fifo_empty(intf.fifo_empty),
+   .err1(intf.err1),
+   .err2(intf.err2),
+   .err3(intf.err3)
+  );
+ initial begin
+   uvm_config_db#(virtual inf)::set(null, "uvm_test_top", "vir_intf", intf);
+   run_test("tester");
+  end
+  initial begin
+    $dumpvars;
+    $dumpfile ("dump.vcd");
+  end
+endmodule:top
